@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block layout_block %}
+  <section class="flex dark:bg-gray-800 justify-center">
+
+    {% block sidebar %}
+        {% include "users/components/navigation_sidebar.html" %}
+    {% endblock sidebar %}
+ 
+    <div class="content flex-1">
+      {% block content_block %}
+        example content from index.html
+      {% endblock content_block %}
+    </div>
+  </section>
+{% endblock layout_block %}

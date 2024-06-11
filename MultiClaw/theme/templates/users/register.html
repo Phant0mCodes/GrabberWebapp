@@ -1,0 +1,72 @@
+<!-- users/templates/users/register.html -->
+{% extends "users/index.html" %}
+{% block sidebar %}
+{% endblock sidebar %}
+{% block content_block %}
+    <section class="bg-gray-50 dark:bg-gray-900 rounded-lg w-full">
+        <div class="flex flex-col items-center justify-center px-6 py-8 mx-auto md:h-screen lg:py-0 rounded-lg">
+            <div class="flex items-center mb-6 text-2xl font-semibold text-gray-900 dark:text-white">MultiClaw Logo</div>
+            <div class="w-full bg-white rounded-lg shadow dark:border md:mt-0 sm:max-w-md xl:p-0 dark:bg-gray-800 dark:border-gray-700">
+                <div class="p-6 space-y-4 md:space-y-6 sm:p-8">
+                    <h1 class="text-xl font-bold leading-tight tracking-tight text-gray-900 md:text-2xl dark:text-white">
+                        Create an account
+                    </h1>
+                    <form class="space-y-4 md:space-y-6" method="POST">
+                        {% csrf_token %}
+
+                        <div>
+                            <label for="id_username"
+                                   class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                                Username: <span class="text-red-500">*</span>
+                            </label>
+                                {{ form.username }}
+                        
+                        </div>
+                        <div>
+                            <label for="id_jabber_address"
+                                   class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                                Jabber: <span class="text-xs"></span>
+                            </label>
+                                {{ form.jabber_address }}
+                        
+                        </div>
+                        <div>
+                            <label for="id_password1"
+                                   class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                                Password: <span class="text-red-500">*</span>
+                            </label>
+                                {{ form.password1 }}
+                        
+                        </div>
+                        <div>
+                            <label for="id_password2"
+                                   class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                                Confirm password: <span class="text-red-500">*</span>
+                            </label>
+                                {{ form.password2 }}
+                        
+                        </div>
+                        <!-- -->
+                        
+                        <div class="flex items-start">
+                            <div class="px-1 text-sm">
+                                <div for="terms" class="font-light text-gray-500 dark:text-gray-300">
+                                    By creating an account, you agree to our <a class="font-medium text-primary-600 hover:underline dark:text-primary-500"
+    href="{% url 'tos' %}">Terms and Conditions</a>
+                                </div>
+                            </div>
+                        </div>
+                        <button type="submit"
+                                class="w-full text-white bg-primary-600 hover:bg-primary-700 focus:ring-4 focus:outline-none focus:ring-primary-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center dark:bg-primary-600 dark:hover:bg-primary-700 dark:focus:ring-primary-800">
+                            Create an account
+                        </button>
+                        <p class="text-sm font-light text-gray-500 dark:text-gray-400">
+                            Already have an account? <a href="{% url 'login' %}"
+    class="font-medium text-primary-600 hover:underline dark:text-primary-500">Login here</a>
+                        </p>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </section>
+{% endblock content_block %}
