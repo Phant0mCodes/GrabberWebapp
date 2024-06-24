@@ -30,7 +30,11 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 # Tailwind added by hand
-
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    },
+}
 
 TAILWIND_APP_NAME = 'theme'
 INTERNAL_IPS = [
@@ -51,6 +55,7 @@ INSTALLED_APPS = [
     'theme',
     'django_browser_reload',
     'parser',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -84,7 +89,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'MultiClaw.wsgi.application'
-
+ASGI_APPLICATION = 'MultiClaw.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases

@@ -1,0 +1,44 @@
+<form class="text-white w-[300px space-y-2" id="shop_auth">
+    {% csrf_token %}
+    {{ shopware_form.user }}
+    <div class="flex" id="domain">
+        <span class="inline-flex items-center px-3 text-sm text-gray-900 bg-gray-200 border rounded-e-0 border-gray-300 border-e-0 rounded-s-md dark:bg-gray-600 dark:text-gray-400 dark:border-gray-600">
+            https://
+        </span>
+        {{ shopware_form.domain }}
+    </div>
+    <div class="flex" id="username">
+        <span class="inline-flex items-center px-3 text-sm text-gray-900 bg-gray-200 border rounded-e-0 border-gray-300 border-e-0 rounded-s-md dark:bg-gray-600 dark:text-gray-400 dark:border-gray-600">
+            <i class="fa-solid fa-user"></i>
+        </span>
+        {{ shopware_form.username }}
+    </div>
+    <div class="flex" id="password">
+        <span class="inline-flex items-center px-3 text-sm text-gray-900 bg-gray-200 border rounded-e-0 border-gray-300 border-e-0 rounded-s-md dark:bg-gray-600 dark:text-gray-400 dark:border-gray-600">
+            <i class="fa-solid fa-key"></i>
+        </span>
+        {% comment %} {{ shopware_form.password }} {% endcomment %}
+        <input type="password"
+               name="password"
+               maxlength="255"
+               placeholder="Password"
+               class="bg-gray-50 border border-gray-300 text-gray-900 sm:text-sm focus:ring-primary-600 focus:border-primary-600 block p-1 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500 w-full"
+               id="id_password">
+        <span class="inline-flex items-center px-3 text-sm text-gray-900 bg-gray-200 border rounded-e-lg border-gray-300 cursor-pointer dark:bg-gray-600 dark:text-gray-400 dark:border-gray-600"
+              onclick="togglePassword()">
+            <i class="fa-solid fa-eye" id="togglePasswordIcon"></i>
+        </span>
+    </div>
+    <button id="connect"
+            type="submit"
+            class="text-white font-bold bg-gradient-to-r from-green-400 via-green-500 to-green-600 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-green-300 dark:focus:ring-green-800 shadow-lg shadow-green-500/50 dark:shadow-lg dark:shadow-green-800/80 rounded-lg text-sm px-5 py-2.5 text-center w-full">
+        <div class="flex justify-center align-middle space-x-2">
+            <div class="flex align-middle" id="button_icon">
+                <i class="inline-flex self-center fa-solid fa-plug" id="plug"></i>
+                <div id="spinner" class="hidden">{% include "users/elements/spinner_element.html" %}</div>
+                <div id="checked" class="hidden">{% include "users/elements/check_element.html" %}</div>
+            </div>
+            <span id="connect_button_label">Connect</span>
+        </div>
+    </button>
+</form>

@@ -17,7 +17,7 @@ from users.forms import CustomUserCreationForm, CustomAuthForm
 from users.models import BitcoinAddress
 from parser import Parser
 from parser.forms import SettingsForm
-from parser.models import Modes, GrabSettings
+from parser.models import Modes, Settings
 from parser.Core import Core
 
 def tos(request):
@@ -104,7 +104,7 @@ def topup(request):
 
 # @login_required
 def start_grab(request, parser_name=None):
-    
+        
     available_parsers = [
         modname
         for i, (importer, modname, ispkg)
@@ -112,12 +112,12 @@ def start_grab(request, parser_name=None):
     ]
     features_instance = None
     features_fields = None
-    settings_model = None
+    settings = None
     
-    settings_models = GrabSettings.objects.filter(user=request.user, parser_name=parser_name)
+    settings_models = Settings.objects.filter(user=request.user, parser_name=parser_name)
     if settings_models:
-        settings_model = settings_models[0]
-        form = SettingsForm(instance=settings_model)
+        settings = settings_models[0]
+        form = SettingsForm(instance=settings)
     
     else:
         form = SettingsForm(initial={
@@ -131,7 +131,8 @@ def start_grab(request, parser_name=None):
     )
     
     if request.method == "POST":
-        form = SettingsForm(request.POST, instance=settings_model)
+        form = SettingsForm(request.POST, instance=settings)
+        print(form.errors)
         if form.is_valid():
             form.save()
     
@@ -149,7 +150,8 @@ def start_grab(request, parser_name=None):
         'parser_name': parser_name,
         'features_instance': features_instance,
         'features_fields': features_fields,
-        'form': form
+        'form': form,
+        'settings': settings
     }
     
     return render(request, 'users/pages/start_grab.html', context=context)
@@ -158,23 +160,15 @@ def start_grab(request, parser_name=None):
 def start_grab_thread(request):
     parser_name = request.POST['parser_name']
 
-    settings_model = GrabSettings.objects.filter(user=request.user, parser_name=parser_name)[0]
+    settings_model = Settings.objects.filter(user=request.user, parser_name=parser_name)[0]
     parser_module = importlib.import_module(f'parser.Parser.{parser_name}')
     parser_class = getattr(parser_module, parser_name)
     parser_instance: Core = parser_class(settings_model)
     
     asyncio.run(parser_instance.grab())
     
-    # grab_thread = Thread(target=start_grab_in_background_thread, args=(parser_instance, )) 
-    # grab_thread.start()
-    
     if request.method == "POST":       
         return redirect('start')
-    
-def start_grab_in_background_thread(parser_instance):
-    print('starting start_grab_in_background_thread')
-    parser_instance.grab()
-
 
 # @login_required
 def status(request):

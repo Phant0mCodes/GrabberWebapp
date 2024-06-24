@@ -39,7 +39,7 @@
     <form method="post" class="grid gap-6 w-[550px]">
         {% csrf_token %}
         {{ form.user }}
-        {{ form.parser_name }}
+        <div class="hidden">{{ form.parser_name }}</div>
         <div class="grid grid-cols-3 gap-4 gap-x-8">
             <div class="col-span-3 text-xl font-bold mb-4">
                 Grab Settings <span class="text-blue-500 text-sm">[{{ parser_name }}]</span>
@@ -92,7 +92,9 @@
 
         </div>
     </form>
-    <iframe name="dummyframe" id="dummyframe" style="display: none;"></iframe>
+
+    
+    <iframe name="dummyframe" id="dummyframe" class="hidden"></iframe>
 
     <form action="{% url 'start_grab_thread' %}" method="post" target='dummyframe'>
         {% csrf_token %}

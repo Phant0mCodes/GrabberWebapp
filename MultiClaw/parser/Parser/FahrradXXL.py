@@ -1,3 +1,5 @@
+import django
+django.setup()
 import html
 import random
 import re
@@ -10,7 +12,7 @@ from parser.models import (
     Product, 
     ProductMessages, 
     Features, 
-    GrabSettings, 
+    Settings, 
     Category, 
     Image,
     ProductReview
@@ -96,6 +98,7 @@ class FahrradXXL(Core):
         product = Product(
             source_url=url, 
             category=category,
+            category_path=category.path,
             source_shop=self.PARSER_NAME,            
         )
         
@@ -108,7 +111,7 @@ class FahrradXXL(Core):
             pass
             return None, ProductMessages.no_js
         
-        script_tags = soup.find_all('script', text=True)
+        script_tags = soup.find_all('script', string=True)
 
         for script_tag in script_tags:
             if 'additional_data' in script_tag.string and '{"xref":' in script_tag.string:
@@ -141,8 +144,10 @@ class FahrradXXL(Core):
             
         description_html = soup.select_one('#pvd-d')
         if description_html:
-            description_html.select_one('#artikel-description-more-button').decompose()
-            description_html.select_one('.fxxl-artikel-detail__section_header1').decompose()
+            try:
+                description_html.select_one('#artikel-description-more-button').decompose()
+                description_html.select_one('.fxxl-artikel-detail__section_header1').decompose()
+            except: pass
             description_html = str(description_html)
         else:
             description_html = ''
@@ -153,10 +158,14 @@ class FahrradXXL(Core):
         if description_tail:
             el = description_tail.select_one('.fxxl-artikel-detail__property-error-report')
             if el:
-                el.decompose()
-            el = description_tail.find('div', text=re.compile(' Anleitungen und Zubehör '))
+                try:
+                    el.decompose()
+                except: pass
+            el = description_tail.find('div', string=re.compile(' Anleitungen und Zubehör '))
             if el:
-                el.parent.decompose()
+                try:
+                    el.parent.decompose()
+                except: pass
 
             description_tail['class'] = 'grng_detail_attributes'
             for div in description_tail.select('div'):
@@ -250,25 +259,21 @@ class FahrradXXL(Core):
 
             image_urls = [img_data['src'] for img_data in eval(images_script)]
             subbed_sku = re.sub('\W', '', child_product.sku)
-            alt_name = html.unescape(child_product.name)
-            alt_name = re.sub('[/\s\W]+', '-', alt_name)
+            alt_name = re.sub('[/\s\W]+', '-', html.unescape(child_product.name))
             rnd = random.randint(10000, 99999)
-            image_filenames: list = [
-                f"{subbed_sku}{rnd}_product_image_{alt_name}_{str(p + 1).zfill(2)}"
-                for p in range(len(image_urls))
-            ]
             
             child_product_images = [
                 Image(
                     url=url,
                     filename=f"{subbed_sku}{rnd}_product_image_{alt_name}_{str(i + 1).zfill(2)}",
                     source_shop=self.PARSER_NAME,
-                    # for_product=child_product,
                     image_type='product_image'
                 )
                 for i, url in enumerate(image_urls, start=2)
             ]
             
+            child_product.main_image = child_product_images[0]
+                        
             child_products[child_product] = child_product_images
             
             
@@ -297,13 +302,26 @@ class FahrradXXL(Core):
             )
             
             parent_category = category            
-            # await category.asave()
+            await category.asave()
         
         return category
     
     async def get_product_images(self, soup) -> list[Image]:
         ...
     
+    
 if __name__ == "__main__":
-    self = FahrradXXL()
-
+    from parser.models import (
+        Category,
+        Product, 
+        ProductMessages, 
+        Features, 
+        Settings, 
+        Modes,
+        Image,
+        ProductReview,
+        ShopwareShop
+    )
+    settings = Settings.objects.all().first()
+    self = FahrradXXL(settings)
+    print('debug')

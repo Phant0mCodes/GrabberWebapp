@@ -1,5 +1,5 @@
 from django import forms
-from parser.models import GrabSettings, ShopwareShop
+from parser.models import Settings, ShopwareShop
 
 CLASS_ATTR = """bg-gray-50 border border-gray-300 rounded-lg text-gray-900 sm:text-sm focus:ring-primary-600 
 focus:border-primary-600 block p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white 
@@ -15,11 +15,11 @@ LABEL_CLASS = ['text-white']
 class SettingsForm(forms.ModelForm):
 
     class Meta:
-        model = GrabSettings
+        model = Settings
         fields = "__all__"
         widgets = {
             'user': forms.HiddenInput(),
-            'parser_name': forms.HiddenInput(),
+            # 'parser_name': forms.HiddenInput(),
             'parser_mode': forms.Select(),
             'category_urls': forms.Textarea(attrs={'placeholder': 'Please enter category URLs, one per line.', 'required': False}),
             'product_urls': forms.Textarea(attrs={'placeholder': 'Please enter product URLs, one per line.'}),
@@ -47,6 +47,7 @@ class ShopwareShopForm(forms.ModelForm):
         widgets = {
             'user': forms.HiddenInput(),
             'valid': forms.HiddenInput(),
+            'target_shop': forms.HiddenInput(),
             'password': forms.PasswordInput(),
         }
         

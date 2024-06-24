@@ -40,8 +40,9 @@ user_urls = [
 
 export_urls = [
     path('export/', parser_views.export, name='export'),
-    path('export/<parser_name>/<destination>', parser_views.export, name='export'),
+    path('export/<parser_name>', parser_views.export, name='export'),
     path('check_shop_connection/', parser_views.check_shop_connection, name='check_shop_connection'),
+    path('start_export/', parser_views.start_export, name='start_export'),
 ]
 
 parser_urls = [

@@ -10,6 +10,8 @@ class CustomUser(AbstractUser):
     user_permissions = models.ManyToManyField(Permission, related_name='customuser_set', blank=True)
     tos_accepted = models.BooleanField(default=True)
     credits_amount = models.IntegerField(default=0)
+    grab_lock = models.BooleanField(default=False)
+    export_lock = models.BooleanField(default=False)
     def __str__(self):
         return self.username
 

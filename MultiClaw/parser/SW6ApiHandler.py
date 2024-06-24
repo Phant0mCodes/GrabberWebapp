@@ -1,11 +1,17 @@
+import django
+django.setup()
+from django.utils import timezone
 import random
 import sys
+# import magic
 import traceback
 import mimetypes
 import requests
 import httpx
 import json
 import os
+from asgiref.sync import sync_to_async
+import asyncio
 import time
 import math
 import yaml
@@ -24,9 +30,9 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from hashlib import md5
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from parser.models import ShopwareAccessToken
+from parser.models import ShopwareAccessToken, Image
 
 def randomize_color(hex_color: str, offset: int = 6) -> str:
     while len(hex_color) < 7:
@@ -58,11 +64,11 @@ class SW6Shop:
         self.username = username
         self.password = password
         
-        print('instance inited')
+        print('SW6Shop instance initiated')
     
-    def init_sync(self):
-        self.read_shop_data_from_url()
-        self.create_sales_channel_rule()
+    async def init_sync(self):
+        await self.read_shop_data_from_url()
+        # self.create_sales_channel_rule()
 
     def save_shop_data(self):
         with open(f'{self.CACHEDIR}/{self.target}_shop_data.yaml', 'w') as shop_data_file:
@@ -75,142 +81,126 @@ class SW6Shop:
         self.username = self.shop_data.username
         self.password = self.shop_data.password
 
-    def read_shop_data_from_url(self):
+    async def read_shop_data_from_url(self):
         shop_data = self.shop_data
         shop_data.username = self.username
         shop_data.password = self.password
 
-        with ThreadPoolExecutor() as ex:
-            sales_channels_thread = ex.submit(self.read_sales_channels)
-            cms_layouts_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/cms-page')
-            type_id_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/sales-channel-type')
-            languages_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/language')
-            customer_group_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/customer-group')
-            currency_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/currency')
-            payment_method_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/payment-method')
-            shipping_method_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/shipping-method')
-            countries_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/country')
-            root_categories_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/category')
-            snippet_sets_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/snippet-set')
-            tax_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/tax')
-            delivery_time_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/delivery-time')
-            locales_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/locale')
-            rule_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/rule')
-            media_folder_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/media-folder')
-            media_default_folder_thread = ex.submit(self.generate_admin_request, 'POST', f'https://{self.target}/api/search/media-default-folder')
+        # Define the asynchronous tasks as a dictionary
+        tasks = {
+            'sales_channels': self.read_sales_channels(),
+            'cms_layouts': self.generate_admin_request('POST', f'https://{self.target}/api/search/cms-page'),
+            'sales_channel_type': self.generate_admin_request('POST', f'https://{self.target}/api/search/sales-channel-type'),
+            'languages': self.generate_admin_request('POST', f'https://{self.target}/api/search/language'),
+            'customer_group': self.generate_admin_request('POST', f'https://{self.target}/api/search/customer-group'),
+            'currency': self.generate_admin_request('POST', f'https://{self.target}/api/search/currency'),
+            'payment_method': self.generate_admin_request('POST', f'https://{self.target}/api/search/payment-method'),
+            'shipping_method': self.generate_admin_request('POST', f'https://{self.target}/api/search/shipping-method'),
+            'countries': self.generate_admin_request('POST', f'https://{self.target}/api/search/country'),
+            'root_categories': self.generate_admin_request('POST', f'https://{self.target}/api/search/category'),
+            'snippet_sets': self.generate_admin_request('POST', f'https://{self.target}/api/search/snippet-set'),
+            'tax': self.generate_admin_request('POST', f'https://{self.target}/api/search/tax'),
+            'delivery_time': self.generate_admin_request('POST', f'https://{self.target}/api/search/delivery-time'),
+            'locales': self.generate_admin_request('POST', f'https://{self.target}/api/search/locale'),
+            'rule': self.generate_admin_request('POST', f'https://{self.target}/api/search/rule'),
+            'media_folder': self.generate_admin_request('POST', f'https://{self.target}/api/search/media-folder'),
+            'media_default_folder': self.generate_admin_request('POST', f'https://{self.target}/api/search/media-default-folder'),
+        }
 
-        shop_data.sales_channels = sales_channels_thread.result()
-        shop_data.cms_layouts = cms_layouts_thread.result().json()['data']
+        # Run the tasks concurrently
+        results = await asyncio.gather(*tasks.values())
+
+        # Map the results back to their task names
+        results = dict(zip(tasks.keys(), results))
+
+        # Process the results
+        shop_data.sales_channels = results['sales_channels']
+        shop_data.cms_layouts = results['cms_layouts'].json()['data']
         shop_data.newsletter_page_id = list(filter(lambda x: 'ewsletter' in x['attributes']['name'], shop_data.cms_layouts))[0]['id']
         shop_data.product_cms_page_id = list(filter(lambda x: any(name in x['attributes']['name'] for name in ['Produktseite', 'product']), shop_data.cms_layouts))[0]['id']
         shop_data.category_page_with_sidebar_id = list(filter(lambda x: 'idebar' in x['attributes']['name'], shop_data.cms_layouts))[0]['id']
-        shop_data.type_id = list(filter(lambda x: x['attributes']['name'] == 'Storefront', type_id_thread.result().json()['data']))[0]['id']
-        shop_data.export_type_id = \
-        list(filter(lambda x: any(name in x['attributes']['name'] for name in ['Produktvergleich', 'comparison']), type_id_thread.result().json()['data']))[0]['id']
+        shop_data.type_id = list(filter(lambda x: x['attributes']['name'] == 'Storefront', results['sales_channel_type'].json()['data']))[0]['id']
+        shop_data.export_type_id = list(filter(lambda x: any(name in x['attributes']['name'] for name in ['Produktvergleich', 'comparison']), results['sales_channel_type'].json()['data']))[0]['id']
         shop_data.storefront_sales_channels = list(filter(lambda x: x['attributes']['typeId'] == shop_data.type_id, shop_data.sales_channels))
-        shop_data.tax_id = list(filter(lambda x: x['attributes']['taxRate'] == 19.0, tax_thread.result().json()['data']))[0]['id']
+        shop_data.tax_id = list(filter(lambda x: x['attributes']['taxRate'] == 19.0, results['tax'].json()['data']))[0]['id']
         locales = {
             item['id']: item['attributes']['code']
-            for item in locales_thread.result().json()['data']
+            for item in results['locales'].json()['data']
         }
         shop_data.languages = {
             locales[lng['attributes']['localeId']]: lng['id']
-            for lng in languages_thread.result().json()['data']
+            for lng in results['languages'].json()['data']
         }
-        shop_data.customer_group_id = customer_group_thread.result().json()['data'][0]['id']
+        shop_data.customer_group_id = results['customer_group'].json()['data'][0]['id']
         shop_data.currencies = {
             item['attributes']['isoCode']: item['id']
-            for item in currency_thread.result().json()['data']
+            for item in results['currency'].json()['data']
         }
         shop_data.payment_methods = {
             item['attributes']['name']: item['id']
-            for item in payment_method_thread.result().json()['data']
+            for item in results['payment_method'].json()['data']
         }
         shop_data.shipping_methods = {
             item['attributes']['name']: item['id']
-            for item in shipping_method_thread.result().json()['data']
+            for item in results['shipping_method'].json()['data']
         }
         shop_data.countries = {
             item['attributes']['name']: item['id']
-            for item in countries_thread.result().json()['data']
+            for item in results['countries'].json()['data']
         }
         shop_data.root_category_ids = [
             item['id']
-            for item in list(filter(lambda x: x['attributes']['parentId'] is None,
-                                    root_categories_thread.result().json()['data']))
+            for item in list(filter(lambda x: x['attributes']['parentId'] is None, results['root_categories'].json()['data']))
         ]
         shop_data.snippet_sets = {
             item['attributes']['name']: item['id']
-            for item in snippet_sets_thread.result().json()['data']
+            for item in results['snippet_sets'].json()['data']
         }
         shop_data.rules = {
             item['attributes']['name']: item['id']
-            for item in rule_thread.result().json()['data']
+            for item in results['rule'].json()['data']
         }
         shop_data.media_folders = {
             item['attributes']['name']: item['id']
-            for item in media_folder_thread.result().json()['data']
+            for item in results['media_folder'].json()['data']
         }
-        prd_default_folder_id = [item for item in media_default_folder_thread.result().json()['data'] if item['attributes']['entity'] == 'product'][0]['id']
-        shop_data.product_media_folder_id = [item for item in media_folder_thread.result().json()['data'] if item['attributes']['defaultFolderId'] == prd_default_folder_id][0]['id']
+        prd_default_folder_id = [item for item in results['media_default_folder'].json()['data'] if item['attributes']['entity'] == 'product'][0]['id']
+        shop_data.product_media_folder_id = [item for item in results['media_folder'].json()['data'] if item['attributes']['defaultFolderId'] == prd_default_folder_id][0]['id']
 
-    def obtain_access_token(self):
+    async def obtain_access_token(self):
         """
         :return token string if token obtained or False if not
         """
-        
-        token = ShopwareAccessToken(pk=self.target)
-        print(f'{token=}')
-        
-        if os.path.exists(f'{self.CACHEDIR}/{self.target}_access_token.txt'):
-            try:
-                data = json.loads(open(f'{self.CACHEDIR}/{self.target}_access_token.txt', 'r').read())
-                access_token = data['access_token']
-                timestamp = data['valid_until']
-            except json.decoder.JSONDecodeError:
-                timestamp = 0
+            
+        token, created = await ShopwareAccessToken.objects.aget_or_create(pk=self.target)
 
-            expired = True if time.time() > timestamp else False
-            if not expired:
-                return access_token
+        if token.valid_until and timezone.now() < token.valid_until:
+            return token.token
 
-        else:
-            expired = True
+        response = self.fetch_access_token()
+        if response.status_code != 200:
+            return False
+        response_data = response.json()
+        token.token = response_data['access_token']
+        token.valid_until = timezone.now() + timedelta(seconds=590)
+        await token.asave()
 
-        if expired:
-            response = self.fetch_access_token()
-            if not response.status_code == 200:
-                return False
-            response_data = response.json()
-            token_data = dict(
-                access_token=response_data['access_token'],
-                valid_until=time.time() + 590,
-            )
-
-        with open(f'{self.CACHEDIR}/{self.target}_access_token.txt', 'w') as tokenfile:
-            tokenfile.write(json.dumps(token_data))
-
-        return token_data['access_token']
+        return token.token        
 
     def fetch_access_token(self):
-        token = ShopwareAccessToken(pk=self.target)
-        print(f'{token=}')
-        payload = {
+        return httpx.post(f'https://{self.target}/api/oauth/token', json={
             'client_id': 'administration',
             'grant_type': 'password',
             'scopes': 'write',
             'username': self.username,
             'password': self.password
-        }
-        url = f'https://{self.target}/api/oauth/token'
-        print(url)
-        return httpx.post(url, json=payload)
+        })
     
-    def generate_headers(self, **kwargs):
+    async def generate_headers(self, **kwargs):
 
         headers = {
             # 'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.obtain_access_token()}',
+            'Authorization': f'Bearer {await self.obtain_access_token()}',
             'indexing-behavior': 'use-queue-indexing',
             # 'indexing-behavior': 'disable-indexing',
             'single-operation': '1'
@@ -220,18 +210,20 @@ class SW6Shop:
 
         return headers
 
-    def generate_admin_request(self, method, url, payload=None, data=None, headers=None) -> requests.Response:
+    async def generate_admin_request(self, method, url, payload=None, data=None, headers=None) -> httpx.Response:
         if not payload:
             payload = {}
         if not headers:
-            headers = self.generate_headers()
+            headers = await self.generate_headers()
 
-        response = requests.request(method, url, json=payload, data=data, headers=headers)
-        return response
+        async with httpx.AsyncClient() as client:
+            response = await client.request(method, url, json=payload, data=data, headers=headers, timeout=10)
+            return response
 
-    def read_sales_channels(self):
-        return self.generate_admin_request('POST', f'https://{self.target}/api/search/sales-channel').json()['data']
-
+    async def read_sales_channels(self):
+        response = await self.generate_admin_request('POST', f'https://{self.target}/api/search/sales-channel')
+        return response.json()['data']
+    
     def helper_get_blocks(self, name, item):
 
         blocks = [
@@ -715,23 +707,27 @@ class SW6Shop:
     def __generate_product_payload__(self, data: dict):
         shop_data = self.shop_data
 
-        source_url = data['url']
-        full_category = data['category']
+        with open('product_dict.json', 'w') as fl:
+            fl.write(json.dumps(data, indent=4))
+        
+        source_url = data['source_url']
+        full_category = data['category_path']
         product_number = data['product_number']
         sku = str(data['sku'])
-        name = data['product_name'][:255]
+        name = data['name'][:255]
         ean = data['ean']
-        description = data['description_html']
-        description_tail = data['description_tail']  # if 'description_tail' in data else ''
+        description = data['html_description']
+        description_tail = data['details_description']  # if 'description_tail' in data else ''
         short_description = data['short_description']  # if 'short_description' in data else ''
-        manufacturer_number = data['manufacturer_number'][:100]  # if 'manufacturer_number' in data else ''
+        manufacturer_number = data['manufacturer_number'][:100] if data['manufacturer_number'] else ''
         manufacturer_name = str(data['manufacturer_name'])
-        manufacturer_image_url = data['manufacturer_image_url']
+        manufacturer_image_url = data['manufacturer_image']
         strike_price = float(str(data['strike_price']).replace(',', '.'))
-        purchase_price = float(str(data['purchase_price']).replace(',', '.')) if data['purchase_price'] else 0
+        purchase_price = float(str(data['price']).replace(',', '.')) if data['price'] else 0
         energy_class = data['energy_class']  # if 'energy_class' in data else ''
         energy_icon_filename = data['energy_icon_filename']  # if 'energy_icon_filename' in data else ''
         energy_icon_url = data['energy_icon_url']  # if 'energy_icon_filename' in data else ''
+        time.sleep(3)
         energy_label_filename = data['energy_label_filename']  # if 'energy_label_filename' in data else ''
         energy_label_url = data['energy_label_url']  # if 'energy_label_filename' in data else ''
         energy_pdf_filename = data['energy_pdf_filename']  # if 'energy_datasheet_filename' in data else ''
@@ -748,8 +744,6 @@ class SW6Shop:
         pack_unit_plural = data['pack_unit_plural']
 
         product_id = md5(f"{sku}".encode()).hexdigest()
-        print(source_url)
-        print(sku)
         manufacturer_media_id = md5(manufacturer_image_url.encode()).hexdigest()
         currency_id = shop_data.currencies[currency]
         tax_id = shop_data.tax_id
@@ -808,9 +802,9 @@ class SW6Shop:
             'grab_add_energy_icon_filename': energy_icon_filename,
             'grab_add_energy_label_filename': energy_label_filename,
             'grab_add_energy_datasheet_filename': energy_pdf_filename,
-            'grab_add_energy_class_file_type_media': md5(energy_icon_url.encode()).hexdigest(),
-            'grab_add_energy_label_file_type_media': md5(energy_label_url.encode()).hexdigest(),
-            'grab_add_energy_datasheet_file_type_media': md5(energy_pdf_url.encode()).hexdigest(),
+            'grab_add_energy_class_file_type_media': md5(energy_icon_url.encode()).hexdigest() if energy_icon_url else None,
+            'grab_add_energy_label_file_type_media': md5(energy_label_url.encode()).hexdigest() if energy_label_url else None,
+            'grab_add_energy_datasheet_file_type_media': md5(energy_pdf_url.encode()).hexdigest() if energy_pdf_url else None,
         }
         custom_field_sets_payload_data = [
             {
@@ -887,8 +881,8 @@ class SW6Shop:
                 'price': [
                     {
                         'currencyId': currency_id,
-                        'gross': float(str(child_data['purchase_price']).replace(',', '.')),
-                        'net': float(str(child_data['purchase_price']).replace(',', '.')) / 1.19,
+                        'gross': float(str(child_data['price']).replace(',', '.')),
+                        'net': float(str(child_data['price']).replace(',', '.')) / 1.19,
                         'linked': True,
                         'listPrice':
                             {
@@ -924,7 +918,7 @@ class SW6Shop:
                 #     for item in shop_data.sales_channels
                 # ],
                 'customFields': {
-                    'grab_add_description_tail': child_data['description_tail']},
+                    'grab_add_description_tail': child_data['details_description']},
                 'media': [
                     {
                         'id': md5((md5(child_data['product_number'].encode()).hexdigest() + md5(
@@ -942,7 +936,7 @@ class SW6Shop:
                     } for i, image_url in enumerate(child_data['image_urls'])
                 ],
                 'cover': {
-                    'mediaId': md5(child_data['image_urls'][0].encode()).hexdigest(),
+                    'mediaId': md5(child_data['main_image'].encode()).hexdigest(),
                 },
                 'categories': [product_category_payload_data],
 
@@ -954,8 +948,6 @@ class SW6Shop:
                 'salesChannelId': shop_data.storefront_sales_channels[0]['id'],
                 'languageId': shop_data.languages['de-DE'],
                 'status': True,
-
-                # 'title': re.sub('\W', '', rev['title']) if re.sub('\W', '', rev['title']) != '' else 'No Subject',
                 'title': rev['title'] if rev['title'] else 'Kein Betreff',
                 'content': rev['content'] if rev['content'] else 'Alles super',
                 'points': rev['points'],
@@ -1043,20 +1035,11 @@ class SW6Shop:
             'categories': [product_category_payload_data],
             'productReviews': reviews_payload_data,
             'tags': tags_payload_data,
-            # 'packUnit': pack_unit,
-            # 'packUnitPlural': pack_unit_plural,
-            # 'purchaseUnit': purchase_unit,
-            # 'referenceUnit': reference_unit,
-            # 'unit': {
-            #     'id': md5(unit.encode()).hexdigest(),
-            #     'name': unit,
-            #     'shortCode': unit,
-            # },
         }
 
         return product_payload
 
-    def create_products(self, data: dict) -> (list, list, requests.Response):
+    async def create_products(self, product_data: dict) -> (list, list, httpx.Response):
         """
         create a product with shopware 6 API
 
@@ -1094,17 +1077,15 @@ class SW6Shop:
         TODO: check existing products to avoid unnessecery overwriting (not within controller, but within grab main()
         TODO: grouping property groups in subgroups
         TODO: develop property handling and "wesentliche Merkmale" handling
-        TODO: add metrics like weight, width, height, shipping methods etc.
-        TODO: add reviews writing
         TODO: add better docstring lol
         """
         shop_data = self.shop_data
 
-        product_payload = self.__generate_product_payload__(data)
+        product_payload = self.__generate_product_payload__(product_data)
 
         energy_media_data = [
             {
-                'id': md5(url.encode()).hexdigest(),
+                'id': md5(str(url).encode()).hexdigest(),
                 'mediaFolder': {
                     'id': md5('ENERGY'.encode()).hexdigest(),
                     'name': 'ENERGY',
@@ -1112,9 +1093,9 @@ class SW6Shop:
                 }
             }
             for url in [
-                data['energy_icon_url'],
-                data['energy_label_url'],
-                data['energy_pdf_url']
+                product_data['energy_icon_url'],
+                product_data['energy_label_url'],
+                product_data['energy_pdf_url']
             ]
         ]
 
@@ -1130,23 +1111,21 @@ class SW6Shop:
                 'payload': energy_media_data
             }
         }
-        # dev
-        # response = self.generate_admin_request('POST', self.sync_url, payload)
-        # print(response)
-        # ///dev
 
         status = None
         while status != 200:
-            response = self.generate_admin_request('POST', self.sync_url, payload)
+            response = await self.generate_admin_request('POST', self.sync_url, payload)
             status = response.status_code
             if status not in [200, 204]:
-                print(response.status_code, response.text, str(data['sku']))
+                print(response.status_code, response.text, str(product_data['sku']))
                 time.sleep(5)
             else:
                 pass
                 # print('product uploaded')
 
-        return [str(data['sku'])], [data['url']], response
+        print('before return')
+        
+        return [str(product_data['sku'])], [product_data['source_url']], response
 
     def patch_product(self, data) -> requests.Response:
         payload = self.__generate_product_payload__(data)
@@ -1154,8 +1133,7 @@ class SW6Shop:
         url = f'https://{self.target}/api/product/id/{uuid}'
         return self.generate_admin_request('PATCH', url, payload)
 
-    def upload_media(self, url, filename, file_bytes=False, ext='webp'):
-        # print(f'Uploading {url}')
+    async def upload_media(self, url, filename, file_bytes=False, ext='webp', media=None) -> (httpx.Response, 'media'):
         uuid = md5(url.encode()).hexdigest()
         if file_bytes:
             headers = {
@@ -1175,26 +1153,24 @@ class SW6Shop:
                 # 'upgrade-insecure-requests': '1',
                 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
             }
-            img_resp = requests.get(url, headers=headers)
-            # if img_resp.status_code in (404, 500):
-            #     return
+            
+            async with httpx.AsyncClient() as client:
+                img_resp = await client.get(url, headers=headers)
+                content_type = magic.Magic(mime=True).from_buffer(img_resp.content)
+                ext = content_type.split('/')[1]
+                data = img_resp.content
 
-            content_type = magic.Magic(mime=True).from_buffer(img_resp.content)
-            ext = content_type.split('/')[1]
-            data = img_resp.content
+                if 'svg' in content_type:
+                    content_type = 'image/png'
+                    ext = 'png'
+                    media_file_bytes = svg2png(bytestring=img_resp.text, parent_width=300, parent_height=150)
+                    with open('test.png', 'wb') as ffb:
+                        ffb.write(media_file_bytes)
+                    data = media_file_bytes
 
-            if 'svg' in content_type:
-
-                content_type = 'image/png'
-                ext = 'png'
-                svg_source = img_resp.content
-                media_file_bytes = svg2png(bytestring=img_resp.text, parent_width=300, parent_height=150)
-                with open('test.png', 'wb') as ffb:
-                    ffb.write(media_file_bytes)
-                data = media_file_bytes
-
-            headers = self.generate_headers(**{'accept': 'application/vnd.api+json'})
-            payload = {}
+                headers = self.generate_headers(**{'accept': 'application/vnd.api+json'})
+                payload = {}
+            
         else:
             headers = {}
             data = None
@@ -1213,7 +1189,7 @@ class SW6Shop:
         status_code = 0
         while status_code not in [200, 204]:
 
-            response = self.generate_admin_request(
+            response = await self.generate_admin_request(
                 'POST',
                 f'https://{self.target}/api/_action/media/{uuid}/upload{query}',
                 **kwargs
@@ -1226,24 +1202,12 @@ class SW6Shop:
                 print(response.text)
                 print(error_message)
 
-                time.sleep(10)
+                await asyncio.sleep(10)
 
-        return response
-
-        # status = None
-        # while status not in [200, 204]:
-        #     response = self.generate_admin_request(
-        #         'POST',
-        #         f'https://{self.target}/api/_action/media/{uuid}/upload{query}',
-        #         **kwargs
-        #     )
-        #     status = response.status_code
-        #     if status in [200, 204]:
-        #         return response
-        #
-        #     else:
-        #         print(response.status_code, response.json(), url, filename)
-        #         time.sleep(10)
+        if media:
+            return response, media
+        else:
+            return response
 
     def upload_product_images(self, product_number, image_urls):
 
@@ -2790,10 +2754,14 @@ class SW6Shop:
 
 
 if __name__ == '__main__':
+    import pdb
+    
     self = SW6Shop(
-        target='maxi-bike24.de',
+        target='traum-fahrrad.com',
         username='adminpha',
         password='121416qQ**',
     )
-    self.init_sync()
+    print("")
+    # pdb.set_trace()
+    # self.init_sync()
     # just for testing #

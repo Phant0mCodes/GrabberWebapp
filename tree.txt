@@ -1,0 +1,47 @@
+.
+|-- MultiClaw
+|   |-- MultiClaw
+|   |   |-- __init__.py
+|   |   |-- __pycache__
+|   |   |-- asgi.py
+|   |   |-- settings.py
+|   |   |-- urls.py
+|   |   `-- wsgi.py
+|   |-- db\ copy.sqlite3
+|   |-- db.sqlite3
+|   |-- manage.py
+|   |-- parser
+|   |   |-- Core.py
+|   |   |-- Parser
+|   |   |-- SW6ApiHandler.py
+|   |   |-- __init__.py
+|   |   |-- __pycache__
+|   |   |-- admin.py
+|   |   |-- apps.py
+|   |   |-- forms.py
+|   |   |-- migrations
+|   |   |-- models.py
+|   |   |-- tests
+|   |   `-- views.py
+|   |-- theme
+|   |   |-- __init__.py
+|   |   |-- __pycache__
+|   |   |-- apps.py
+|   |   |-- static
+|   |   |-- static.bak
+|   |   |-- static_src
+|   |   `-- templates
+|   `-- users
+|       |-- __init__.py
+|       |-- __pycache__
+|       |-- admin.py
+|       |-- apps.py
+|       |-- forms.py
+|       |-- migrations
+|       |-- models.py
+|       |-- tests.py
+|       `-- views.py
+|-- product_dict.json
+`-- tree.txt
+
+18 directories, 27 files

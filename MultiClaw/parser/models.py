@@ -25,27 +25,25 @@ class Product(models.Model):
         ('child', 'child'),
     ]
 
-    # uuid = models.UUIDField(default=uuid4().hex, unique=True)
     source_url = models.CharField(primary_key=True, max_length=2550, blank=True, unique=True)
     category = models.ForeignKey(Category, on_delete=models.DO_NOTHING, null=True)
-    source_shop = models.CharField(max_length=255, null=True)    
+    category_path = models.JSONField(null=True, default=None)
+    source_shop = models.CharField(max_length=255, null=True)
     
     product_type = models.CharField(max_length=10, choices=PRODUCT_TYPES, default='single')
     parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, related_name='children')
     main_image = models.ForeignKey('parser.Image', on_delete=models.CASCADE, null=True, related_name='main_image_of')
-    images = models.ManyToManyField('parser.Image', blank=True, related_name='image_of')   
      
     name = models.CharField(max_length=255, blank=True)
     sku = models.CharField(max_length=255, default=None, null=True, unique=True)
     product_number = models.CharField(max_length=255, blank=True)
     ean = models.CharField(max_length=255, null=True)
-    manufacturer_number = models.CharField(max_length=255, null=True)
+    manufacturer_number = models.CharField(max_length=255, null=True, default='')
     manufacturer_name = models.CharField(max_length=255, null=True)
-    manufacturer_image = models.ForeignKey('parser.Image', on_delete=models.CASCADE, null=True)  # need to decide if it is an object or the model
-    # manufacturer_image = models.ManyToManyField('parser.Image', null=True)  # need to decide if it is an object or the model
+    manufacturer_image = models.ForeignKey('parser.Image', on_delete=models.CASCADE, null=True, related_name='manufacturer_images')  # need to decide if it is an object or the model
 
-    options = models.JSONField(null=True, default=None)
-
+    options = models.JSONField(blank=True, null=True, default=dict)
+    properties = models.JSONField(blank=True, null=True, default=dict)
     strike_price = models.FloatField(max_length=100, default=0)
     price = models.FloatField(max_length=100, default=0)
     short_description = models.TextField(null=True)
@@ -74,7 +72,8 @@ class Product(models.Model):
     lenght = models.FloatField(default=None, null=True)
     height = models.FloatField(default=None, null=True)
     width = models.FloatField(default=None, null=True)
-    # reviews = models.ManyToManyField('ProductReview', related_name='reviews', blank=True)
+    images = models.ManyToManyField('parser.Image', blank=True, related_name='image_of')
+    uploaded_to_shops = models.ManyToManyField('ShopwareShop', blank=True, related_name='uploaded_products')
     
     
 class Image(models.Model):
@@ -88,6 +87,7 @@ class Image(models.Model):
     source_shop = models.CharField(max_length=255, null=True)    
     # for_product = models.ForeignKey("parser.Product", on_delete=models.CASCADE, related_name='of_product')
     image_type = models.CharField(max_length=100, choices=IMAGE_TYPES)
+    uploaded_to_shops = models.ManyToManyField('ShopwareShop', blank=True, related_name='uploaded_images')
 
 
 class ProductReview(models.Model):
@@ -112,17 +112,26 @@ class Modes(Enum):
         return self.value
 
 
-class GrabSettings(models.Model):
+class Settings(models.Model):
+    
+    destination_choices = [
+        ('Shopware 6', 'Shopware 6'),
+        ('WooCommerce', 'WooCommerce'),
+        ('Shopify', 'Shopify'),
+    ]
+    
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     parser_name = models.CharField(max_length=100)
-    parser_mode = models.CharField(max_length=100, choices=Modes._member_map_.items())
+    parser_mode = models.CharField(max_length=100, choices=Modes._member_map_.items(), default=Modes.PRODUCT_URLS)
+    destination = models.CharField(blank=True, max_length=100, choices=destination_choices, default='Shopware 6')
+    target_shop = models.ForeignKey('ShopwareShop', on_delete=models.SET_NULL, null=True, blank=True, related_name='settings')
     max_page_amount = models.IntegerField(verbose_name="Max category pages", default=2)
     min_price = models.IntegerField(default=200)
     max_price = models.IntegerField(default=700)
     category_urls = models.TextField(verbose_name="Category URLs", blank=True)
     product_urls = models.TextField(verbose_name="Product URLs", blank=True, default='https://www.fahrrad-xxl.de/carver-drift-e-510-m000009360')
     keywords = models.TextField(verbose_name="Keywords", max_length=1000, blank=True)
-
+    
 
 class ShopwareShop(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
@@ -133,15 +142,15 @@ class ShopwareShop(models.Model):
 
 
 class ShopwareAccessToken(models.Model):
-    shop = models.ForeignKey("parser.ShopwareShop", on_delete=models.CASCADE, primary_key=True)
-    token = models.CharField(max_length=255)
+    shop = models.OneToOneField("parser.ShopwareShop", on_delete=models.CASCADE, primary_key=True)
+    token = models.CharField(max_length=10000)
     created = models.DateTimeField(auto_now=True)
-    valid_until = models.DateTimeField()
+    valid_until = models.DateTimeField(blank=True, null=True)
     
     
 class GrabStatus(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
-    settings_model = models.ForeignKey(GrabSettings, on_delete=models.CASCADE)
+    settings_model = models.ForeignKey(Settings, on_delete=models.CASCADE)
     status = models.CharField(max_length=100, choices=[
         ('active', 'active'),
         ('pending', 'pending'),

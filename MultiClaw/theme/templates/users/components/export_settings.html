@@ -1,0 +1,116 @@
+<div class="text-white py-6 border-b border-gray-700" id="parser_features"></div>
+<div id="settings_form"
+     class="text-white py-6 w-[550px] flex flex-col space-y-3">
+    <form method="post" class="grid gap-6 w-[550px]">
+        {% csrf_token %}
+        {{ settings_form.user }}
+        {{ settings_form.target_shop }}
+        <div class="hidden">{{ settings_form.parser_name }}</div>
+        <div class="grid grid-cols-3 gap-4 gap-x-8">
+            <div class="col-span-3 text-xl font-bold mb-4">
+                Export Settings <span class="text-blue-500 text-sm">[{{ parser_name }}]</span>
+            </div>
+            <div class="col-span-1 text-right">
+                <label for="parser_mode" class="block">{{ settings_form.parser_mode.label }}:</label>
+            </div>
+            <div class="col-span-2">{{ settings_form.parser_mode }}</div>
+            <div class="col-span-1 text-right">
+                <label for="max_page_amount" class="block">{{ settings_form.max_page_amount.label }}:</label>
+            </div>
+            <div class="col-span-2">{{ settings_form.max_page_amount }}</div>
+            <div class="col-span-1 text-right">
+                <label class="block">Price filter:</label>
+            </div>
+            <div id="price-range-container"
+                 class="col-span-2 flex space-x-2 text-gray-400 font-bold">
+                <div>
+                    {{ settings_form.min_price }}
+                    <div class="p-1 text-xs">{{ settings_form.min_price.label }}</div>
+                </div>
+                <div>
+                    {{ settings_form.max_price }}
+                    <div class="p-1 text-xs">{{ settings_form.max_price.label }}</div>
+                </div>
+            </div>
+        </div>
+        <div id="text_areas" class="grid gap-4 w-full">
+            <div id="category-urls-container" class="hidden">
+                <label for="category_urls"
+                       class="text-gray-400 font-bold text-xs block p-1 pb-2">
+                    {{ settings_form.category_urls.label }}:
+                </label>
+                {{ settings_form.category_urls }}
+            </div>
+            <div id="product-urls-container" class="hidden">
+                <label for="product_urls"
+                       class="text-gray-400 font-bold text-xs block p-1 pb-2">
+                    {{ settings_form.product_urls.label }}:
+                </label>
+                {{ settings_form.product_urls }}
+            </div>
+            <div id="keywords-container" class="hidden">
+                <label for="keywords" class="text-gray-400 font-bold text-xs block p-1 pb-2">
+                    {{ settings_form.keywords.label }}:
+                </label>
+                {{ settings_form.keywords }}
+            </div>
+        </div>
+        <div class="flex flex-col space-y-2">
+            <button id="settings-btn"
+                    type="submit"
+                    class="w-full text-white font-bold bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 rounded-lg text-sm px-5 py-2.5 text-center items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Apply settings
+            </button>
+        </div>
+    </form>
+    <iframe name="dummyframe" id="dummyframe" class="hidden"></iframe>
+    <form action="{% url 'start_export' %}" method="post" target='dummyframe'>
+        {% csrf_token %}
+        <input type="hidden" name="parser_name" value="{{ parser_name }}">
+        <button id="start-export"
+                type="submit"
+                class="text-white font-bold bg-gradient-to-r from-green-400 via-green-500 to-green-600 hover:bg-gradient-to-br focus:ring-4 focus:outline-none focus:ring-green-300 dark:focus:ring-green-800 shadow-lg shadow-green-500/50 dark:shadow-lg dark:shadow-green-800/80 rounded-lg text-sm px-5 py-2.5 text-center w-full"
+                class="w-full text-white font-bold bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 rounded-lg text-sm px-5 py-2.5 text-center items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+            <div class="flex justify-center space-x-2">
+                <svg aria-hidden="true"
+                     class="w-6 h-6 transition duration-75 dark:text-white group-hover:text-gray-900 dark:group-hover:text-white"
+                     fill="currentColor"
+                     viewBox="0 0 24 24"
+                     width="24"
+                     height="24"
+                     xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M20.337 3.664c.213.212.354.486.404.782.294 1.711.657 5.195-.906 6.76-1.77 1.768-8.485 5.517-10.611 6.683a.987.987 0 0 1-1.176-.173l-.882-.88-.877-.884a.988.988 0 0 1-.173-1.177c1.165-2.126 4.913-8.841 6.682-10.611 1.562-1.563 5.046-1.198 6.757-.904.296.05.57.191.782.404ZM5.407 7.576l4-.341-2.69 4.48-2.857-.334a.996.996 0 0 1-.565-1.694l2.112-2.111Zm11.357 7.02-.34 4-2.111 2.113a.996.996 0 0 1-1.69-.565l-.422-2.807 4.563-2.74Zm.84-6.21a1.99 1.99 0 1 1-3.98 0 1.99 1.99 0 0 1 3.98 0Z" clip-rule="evenodd" />
+                </svg>
+                <span>Start Export!</span>
+            </div>
+        </button>
+    </form>
+</div>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const parserModeSelect = document.getElementById('id_parser_mode');
+        const categoryUrlsContainer = document.getElementById('category-urls-container');
+        const productUrlsContainer = document.getElementById('product-urls-container');
+        const keywordsContainer = document.getElementById('keywords-container');
+    
+        function updateVisibility() {
+            const selectedValue = parserModeSelect.value;
+            categoryUrlsContainer.style.display = 'none';
+            productUrlsContainer.style.display = 'none';
+            keywordsContainer.style.display = 'none';
+    
+            if (selectedValue === 'CATEGORY_URLS') {
+                categoryUrlsContainer.style.display = 'block';
+            } else if (selectedValue === 'PRODUCT_URLS') {
+                productUrlsContainer.style.display = 'block';
+            } else if (selectedValue === 'KEYWORDS') {
+                keywordsContainer.style.display = 'block';
+            }
+        }
+    
+        parserModeSelect.addEventListener('change', updateVisibility);
+    
+        // Initial visibility update
+        updateVisibility();
+    });
+</script>

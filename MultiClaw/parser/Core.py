@@ -20,7 +20,7 @@ import os
 import yaml
 import asyncio
 import httpx
-
+import logging
 from hashlib import md5
 from pathlib import Path
 from abc import abstractmethod, ABC
@@ -29,6 +29,7 @@ from string import ascii_uppercase
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor, Future
 from django.db import transaction
+from django.forms.models import model_to_dict
 from asgiref.sync import sync_to_async
 # from selenium import webdriver
 
@@ -38,15 +39,18 @@ from parser.models import (
     Product, 
     ProductMessages, 
     Features, 
-    GrabSettings, 
+    Settings, 
     Modes,
     Image,
-    ProductReview
+    ProductReview,
+    ShopwareShop
 )
-
+from users.models import CustomUser
 # from src.DefaultConfig import DefaultConfig
 from bs4 import BeautifulSoup as Bs
 # from sw6_api.sw6_api import SW6Shop
+from parser.SW6ApiHandler import SW6Shop
+
 from urllib.parse import urlencode
 
 
@@ -77,15 +81,19 @@ ENERGY_ICONS = {
     'A+++': 'https://i.postimg.cc/CMRp2j25/A.webp',
 }
 
+logging.basicConfig(level=logging.ERROR, format='%(message)s')
+
+
 class Core(ABC):
 
     DEBUG = True
     
-    def __init__(self, settings: GrabSettings):
+    def __init__(self, settings: Settings):
         self.settings = settings
         self.child_category_urls = set()
         self.product_url_list = set()
         self.semaphore = asyncio.Semaphore(12)
+        self.data_containers = []
 
     # @staticmethod
     # def generate_random_product_number(pre):
@@ -111,6 +119,25 @@ class Core(ABC):
     #     # return url.split('?')[0]
     #     return url
 
+    async def __get_target_shop_instance__(self):
+        """
+        return False if auth failed, else None
+        """
+        target_shop = await ShopwareShop.objects.aget(pk=self.settings.target_shop_id)
+        
+        self.target_shop_instance = SW6Shop(
+            target_shop.domain,
+            username=target_shop.username,
+            password=target_shop.password
+        )
+        
+        result = await self.target_shop_instance.obtain_access_token()
+        
+        if result:
+            await self.target_shop_instance.init_sync()
+
+        return result
+    
     async def grab_single_category(self, category_url: str) -> None:
         
         self.category = Category(
@@ -220,31 +247,56 @@ class Core(ABC):
         
         html = response.content
         soup = Bs(html, "lxml")
-                
         product, product_images, reviews, child_products, message = await self.get_product_data(soup, url)
+        channel_layer = get_channel_layer()
+
         await self.save_product_to_db(product, product_images, reviews, child_products)
         
-    @sync_to_async
-    def save_product_to_db(self, product, product_images, reviews, child_products):   
-        with transaction.atomic():
         
-            product.main_image.save()
-            product.manufacturer_image.save()
-            product.save()
-            product.images.set(product_images)
+    @sync_to_async
+    def save_product_to_db(self, product, product_images, reviews, child_products):
                 
-            for child_product, child_product_images in child_products.items():
-                child_product.save()
-                Image.objects.bulk_create(child_product_images, ignore_conflicts=True)            
-                child_product.images.set(child_product_images)
-            
-            ProductReview.objects.bulk_create(reviews, ignore_conflicts=True)
+        with transaction.atomic():
+            try:
+                
+                product.main_image.save()
+                if product.manufacturer_image: 
+                    product.manufacturer_image.save()
+                product.save()
+                product.images.set(product_images)
+                    
+                for child_product, child_product_images in child_products.items():
+                    child_product.main_image.save()
+                    child_product.save()
+                    Image.objects.bulk_create(child_product_images, ignore_conflicts=True)            
+                    child_product.images.set(child_product_images)
+                
+                ProductReview.objects.bulk_create(reviews, ignore_conflicts=True)
+                
+            except:
+                
+                print(f'PRODUCT {product} COULD NOT BE SAVED')
+        
         
     async def download_products(self, product_url_list):
-            
+        
+        collected_product_urls = self.product_url_list
+        product_urls_from_db = set([
+            product.source_url async for product in 
+            Product.objects
+            .filter(pk__in=collected_product_urls)
+        ])
+
+        product_urls_to_download = collected_product_urls - product_urls_from_db
+
+        total_count = len(collected_product_urls)
+        downloaded_count = len(product_urls_from_db)
+        
+        print(f'{downloaded_count}/{total_count} Downloading products...')
+
         fetch_tasks = [
             asyncio.create_task(self.fetch_url(url))
-            for url in product_url_list            
+            for url in product_urls_to_download            
         ]
 
         process_tasks = []
@@ -326,639 +378,242 @@ class Core(ABC):
                 self.__download_image__(url, filename)
                 self.signals.product_upl_progress.emit()
 
-    def __postprocess_uploaded_products__(self, uploaded_product_skus: list, uploaded_product_urls: list, response: requests.Response = None):
+    ###
+    
+    async def __postprocess_uploaded_products__(
+        self, 
+        uploaded_product_skus: list, 
+        uploaded_product_urls: list, 
+        response: httpx.Response = None
+        ):
 
         if response:
             if response.status_code not in [200, 204]:
                 print(response.text)
-        self.cur.executemany(
-            f"INSERT OR REPLACE INTO `{self._conf.target}_uploaded_products` VALUES(?, ?)",
-            list(zip(self.__jsonify_for_db__(uploaded_product_skus), self.__jsonify_for_db__(uploaded_product_urls)))
-        )
-        self.con.commit()
-
-        for sku in uploaded_product_skus:
-            message = f'✔ PRODUCT UPLOADED ✔ (SKU: {sku})'
+                return
+                    
+        for url in uploaded_product_urls:
+            product = await Product.objects.aget(pk=url)
+            await product.uploaded_to_shops.aadd(self.target_shop_instance.target)
+            message = f'✔ PRODUCT UPLOADED ✔ (URL: {url})'
 
         return 'OK'
 
-    def __sw6_upload_products__(self):
+    async def __sw6_upload_products__(self):
         container_size = 1
 
-        # if self.data_containers:
-        #
-        #     all_existing_products = self.target_shop_instance.get_all_products()
-        #     all_parents = [p for p in all_existing_products if not p['attributes']['parentId']]
-        #     all_existing_parent_urls = [item['attributes']['customFields']['grab_add_source_url'] for item in all_parents]
-        #
-        #     for data in self.data_containers.copy():
-        #         if data['url'] in all_existing_parent_urls:
-        #             self.__postprocess_uploaded_products__([data['sku']], [data['url']])
-        #             self.data_containers.remove(data)
-
-        if not self.DEBUG:
-            with ThreadPoolExecutor(max_workers=12) as executor:
-                uploads = [
-                    executor.submit(self.target_shop_instance.create_products, data)
-                    for data in self.data_containers
-                ]
-                for future in futures.as_completed(uploads):
-                    try:
-                        self.__postprocess_uploaded_products__(*future.result())
-                    except Exception:
-                        traceback.print_exc()
-                        sys.exit()
-
-        else:
+        if self.DEBUG:
             for data in self.data_containers:
-                skus, urls, response = self.target_shop_instance.create_products(data)
-                print(skus, urls, response)
-                self.__postprocess_uploaded_products__(skus, urls, response)
+                skus, urls, response = await self.target_shop_instance.create_products(data)
+                await self.__postprocess_uploaded_products__(skus, urls, response)            
 
-    def __sw6_update_existing_products__(self):
-        print('updating')
-        urls_from_category = self.cur.execute(f"""
-        SELECT product_urls FROM {self.parser_name}_categories
-        WHERE url IN ({", ".join(f"'{item}'" for item in self.child_category_urls)})
-        """).fetchall()
-        urls_from_category = [json.loads(subtup[0]) for subtup in urls_from_category]
-        urls_from_category = [item for subtup in urls_from_category for item in subtup]
-        existing_ids = [
-            p['id'] for p in self.target_shop_instance.get_all_products()
-            if not p['attributes']['parentId']
-        ]
-        data_containers = self.cur.execute((f"""
-            SELECT * FROM `{self.parser_name}_products`
-            WHERE url NOT IN (SELECT url FROM `{self._conf.target}_uploaded_products`)
-            AND url IN ({", ".join([f"'{json.dumps(u)}'" for u in urls_from_category])})
-            """)).fetchall()
-        data_containers = [
-            Product(*[json.loads(col) for col in row]).__dict__
-            for row in data_containers
-        ]
+        async with asyncio.TaskGroup() as tg:
+            tasks = [
+                tg.create_task(self.target_shop_instance.create_products(data))
+                for data in self.data_containers
+            ]
+            for task in asyncio.as_completed(tasks):
+                skus, urls, response = await task
+                await self.__postprocess_uploaded_products__(skus, urls, response)  
 
-        to_patch_datas = [
-            dc
-            for dc in data_containers
-            if md5(dc['sku'].encode()).hexdigest() in existing_ids
-        ]
-        del existing_ids
-        del data_containers
-
-        to_upload_count = len(to_patch_datas)
-
-        self.signals.upload_progress_reset.emit()
-        self.signals.product_uploader_format.emit('UPLOADING PRODUCTS (%v / %m)')
-        self.signals.product_upl_list.emit(to_upload_count)
-
-        if not self.DEBUG:
-            with ThreadPoolExecutor(max_workers=12) as ex:
-                jobs = [
-                    ex.submit(self.target_shop_instance.create_products, data)
-                    for data in to_patch_datas
-                ]
-
-                for future in futures.as_completed(jobs):
-                    self.__postprocess_uploaded_products__(*future.result())
-
-        else:
-            for data in to_patch_datas:
-                _, _, response = self.target_shop_instance.create_products([data])
-                print(response)
-                if response.status_code not in [200, 204]:
-                    print(response.text)
-                self.signals.product_upl_progress.emit()
-
-    def upload_products(self):
+    async def upload_products_to_shopware(self):
         """
         Uploads products to a SW6 instance
         Takes data from self.product_data_container list
         uses create_products() method from sw6_api module, from SW6Shop() class
         """
-        self.cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS `{self._conf.target}_uploaded_products`
-        (sku, url UNIQUE)
-        """)
-        self.con.commit()
+        uploaded_products = set([product async for product in self.target_shop.uploaded_products.all()])
+        products_to_upload = self.products_from_db - uploaded_products
+        total_count = len(self.products_from_db)
+        uploaded_count = len(uploaded_products)
+        
+        print(f'{uploaded_count}/{total_count} products uploaded...')
+        
+        for product in products_to_upload:
+            pass
+            product_dict = await sync_to_async(model_to_dict)(product)
 
-        uploaded_count = len(self.cur.execute((f"""
-        SELECT * FROM `{self._conf.target}_uploaded_products`
-        """)).fetchall())
+            product_dict['image_urls'] = [
+                img.url for img in product_dict['images']
+            ]
+            del product_dict['images']
 
-        if self._conf.mode == 'Category list':
-            self.urls_from_category = self.cur.execute(f"""
-            SELECT product_urls FROM {self.parser_name}_categories
-            WHERE url IN ({", ".join(f"'{item}'" for item in self.filter_categories)})
-            """).fetchall()
-            self.urls_from_category = [json.loads(subtup[0]) for subtup in self.urls_from_category]
-            self.urls_from_category = set(item for subtup in self.urls_from_category for item in subtup)
-            self.data_containers = self.cur.execute((f"""
-                SELECT * FROM `{self.parser_name}_products`
-                WHERE url NOT IN (SELECT url FROM `{self._conf.target}_uploaded_products`)
-                AND url IN ({", ".join([f"'{json.dumps(u)}'" for u in self.urls_from_category])})
-                AND category IS NOT NULL
-                """)).fetchall()
-            self.data_containers = [
-                Product(*[json.loads(col) for col in row]).__dict__
-                for row in self.data_containers
+            child_products = [child async for child in product.children.all()]
+            child_dicts = [
+                await sync_to_async(model_to_dict)(child)
+                for child in child_products
             ]
 
-        elif self._conf.mode == 'Product List':
-            self.data_containers = self.cur.execute((f"""
-                SELECT * FROM `{self.parser_name}_products`
-                WHERE url NOT IN (SELECT url FROM `{self._conf.target}_uploaded_products`)
-                AND url IN ({", ".join([f"'{json.dumps(u)}'" for u in self.to_upload_product_url_list])})
-                AND category IS NOT NULL
-                """)).fetchall()
-            self.data_containers = [
-                Product(*[json.loads(col) for col in row]).__dict__
-                for row in self.data_containers
-            ]
+            for dct in child_dicts:
+                dct['image_urls'] = [
+                    img.url for img in dct['images']
+                ]
+                del dct['images']
+            product_dict['children'] = child_dicts
+            
+            reviews = [rev async for rev in product.reviews.all()]
+            review_dicts = [
+                await sync_to_async(model_to_dict)(rev)
+                for rev in reviews
+            ]     
+            product_dict['reviews'] = review_dicts
+            
+            for rev in product_dict['reviews']:
+                rev['time'] = rev['time'].strftime("%Y-%m-%d %H:%M:%S")
+            
+            self.data_containers.append(product_dict)
+        
+        await self.__sw6_upload_products__()
+           
+    async def upload_manufacturer_images(self):
+                
+        # self.products_from_db = set([
+        #     product async for product in Product
+        #     .objects
+        #     .filter(pk__in=self.product_urls_from_db)
+        #     .select_related('manufacturer_image')
+        # ][:1])
+        
+        manufacturer_images_from_db = set([
+            p.manufacturer_image for p in self.products_from_db
+        ])
+                
+        uploaded_manufacturer_images = set([image async for image in self.target_shop.uploaded_images.filter(image_type='manufacturer_image')])
+        manufacturer_images_to_upload = manufacturer_images_from_db - uploaded_manufacturer_images
+        total_count = len(manufacturer_images_from_db)
+        uploaded_count = len(uploaded_manufacturer_images)
+        
+        print(f'{uploaded_count}/{total_count} Uploading manufacturer images...')
 
-        to_upload_count = len(self.data_containers)
+        # if self.DEBUG:
+        #     for image in manufacturer_images_to_upload:
+        #         response = await self.target_shop_instance.upload_media(image.url, image.filename)
+        #         if response.status_code not in [200, 204]:
+        #             message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {image.url} | FILENAME: {image.filename}'
+        #             print(response.status_code, response.json())
+        #             error_message = response.json()['errors'][0]['code']
+        #             print(error_message)
 
-        self.signals.upload_progress_reset.emit()
-        self.signals.product_uploader_format.emit('UPLOADING PRODUCTS (%v / %m)')
-        self.signals.product_upl_list.emit(to_upload_count + uploaded_count)
+        #             match error_message:
+        #                 case 'CONTENT__MEDIA_NOT_FOUND' | 'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 'CONTENT__MEDIA_ILLEGAL_FILE_NAME':
+        #                     image: Image = image
+        #                     await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+                            
+        #                 case _:
+        #                     print('SOMETHING ELSE HAPPENED, WTF?')
+        #                     print(error_message)
+        #                     continue
+                        
+        #         await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
 
-        self.signals.existing_products2.emit(uploaded_count)
+        #     return
 
-        if self._conf.shop_cms == 'Shopware 6':
-            if self._conf.update_only:
-                self.__sw6_update_existing_products__()
-            else:
-                self.__sw6_upload_products__()
+        tasks = [
+            asyncio.create_task(self.target_shop_instance.upload_media(image.url, image.filename, media=image))
+            for image in manufacturer_images_to_upload
+        ]
 
-        # elif self._conf.shop_cms == 'Shopify':
-        #
-        #     def add_energy_class_metafields(pr: shopify.Product, container):
-        #         energy_class = shopify.Metafield()
-        #         energy_class.namespace = 'EnergyEfficiency'
-        #         energy_class.type = "single_line_text_field"
-        #         energy_class.key = 'Energieklasse'
-        #         energy_class.value = container['energy_class']
-        #         result = pr.add_metafield(energy_class)
-        #
-        #         muta = '''
-        #             mutation StagedUploadsCreate($input: [StagedUploadInput!]!) {
-        #               stagedUploadsCreate(input: $input) {
-        #                 stagedTargets {
-        #                   parameters {
-        #                     name
-        #                     value
-        #                     __typename
-        #                   }
-        #                   resourceUrl
-        #                   url
-        #                   __typename
-        #                 }
-        #                 userErrors {
-        #                   field
-        #                   message
-        #                   __typename
-        #                 }
-        #                 __typename
-        #               }
-        #             }
-        #         '''
-        #         file = open('ASSET_MMS_81072439.pdf', 'rb')
-        #         variables = {
-        #             "input": {
-        #                 "filename": "testdatasheet",
-        #                 "mimeType": "application/pdf",
-        #                 "resource": "FILE",
-        #                 # "fileSize": str(pdf.seek(0, os.SEEK_END)),
-        #                 "httpMethod": "POST"
-        #             }
-        #         }
-        #         response = json.loads(shopify.GraphQL().execute(muta, variables=variables))
-        #
-        #         data = response['data']['stagedUploadsCreate']['stagedTargets'][0]
-        #         files = {
-        #             item['name']: (None, item['value'])
-        #             for item in data['parameters']
-        #         }
-        #         files['file'] = file
-        #         source_url = data['resourceUrl']  # The URL to be passed as originalSource in CreateMediaInput and FileCreateInput for the productCreateMedia and fileCreate mutations.
-        #         post_url = data['url']
-        #         r = requests.request('POST', post_url, files=files)
-        #
-        #         muta = '''
-        #             mutation FileCreateMutation($input: [FileCreateInput!]!) {
-        #               fileCreate(files: $input) {
-        #                 files {
-        #                   alt
-        #                   ... on GenericFile {
-        #                     id
-        #                     createdAt
-        #                   }
-        #                   ... on MediaImage {
-        #                     id
-        #                     createdAt
-        #                   }
-        #                   ... on Video {
-        #                     id
-        #                     createdAt
-        #                   }
-        #                 }
-        #                 userErrors {
-        #                   code
-        #                   field
-        #                   message
-        #                 }
-        #               }
-        #             }
-        #         '''
-        #         muta = '''
-        #         mutation fileCreate($files: [FileCreateInput!]!) {
-        #           fileCreate(files: $files) {
-        #             files {
-        #               alt
-        #             }
-        #             userErrors {
-        #               field
-        #               message
-        #             }
-        #           }
-        #         }
-        #         '''
-        #
-        #         variables = {
-        #             "files": {
-        #                 # "alt": "alternative texte for the test pdf",
-        #                 # "contentType": "",
-        #                 "originalSource": source_url
-        #             }
-        #         }
-        #         response = json.loads(shopify.GraphQL().execute(muta, variables=variables))
-        #
-        #
-        #         # for file upload 3 operations:
-        #         # 1 StagedUploadsCreate
-        #         # 2 POST request to https://shopify-staged-uploads.storage.googleapis.com/
-        #         # 3 FileCreateMutation
-        #
-        #         variables = {
-        #             "files": {
-        #                 "alt": "testpdf",
-        #                 "contentType": "FILE",
-        #                 "originalSource": container['energy_pdf_url']
-        #             }
-        #         }
-        #         muta = '''
-        #         mutation fileCreate($files: [FileCreateInput!]!) {
-        #           fileCreate(files: $files) {
-        #             files {
-        #               alt
-        #               createdAt
-        #             }
-        #           }
-        #         }'''
-        #         result = shopify.GraphQL().execute(muta, variables=variables)
-        #
-        #     def upload_to_shopify(container):
-        #
-        #         single = True if len(container['children']) == 0 else False
-        #         product = shopify.Product()
-        #         product.title = container['product_name']
-        #         product.vendor = container['manufacturer_name']
-        #         product.body_html = container['description_html'] + container['description_tail']
-        #         product.sku = container['sku']
-        #         product.barcode = container['ean']
-        #         product.image_urls = []
-        #
-        #         energy_class = shopify.Metafield()
-        #         energy_class.namespace = 'EnergyEfficiency'
-        #         energy_class.type = "single_line_text_field"
-        #         energy_class.key = 'Energieklasse'
-        #         energy_class.value = container['energy_class']
-        #
-        #
-        #
-        #         result = product.add_metafield(energy_class)
-        #
-        #         for u in container['image_urls']:
-        #             image = shopify.Image()
-        #             image.product_id = product.id
-        #             image.src = u
-        #             product.image_urls.append(image)
-        #         if single:
-        #             product.save()
-        #             variant = product.attributes['variants'][0]
-        #             variant.barcode = container['ean']
-        #             variant.sku = container['product_number']
-        #             variant.compare_at_price = container['strike_price']
-        #             variant.price = container['purchase_price']
-        #             variant.weight = 0.5
-        #
-        #             product.save()
-        #
-        #         options = [child['options'] for child in container['children']]
-        #         product_result = product.save()
-        #
-        #         names = set([
-        #             name for optset in options for name in optset.keys()
-        #         ])
-        #         product.options = [
-        #             {
-        #                 'name': key,
-        #                 'values': list(set(optset[key] for optset in options))
-        #             }
-        #             for key in names
-        #         ]
-        #         product.variants = []
-        #
-        #         for child in container['children']:
-        #             variant = shopify.Variant()
-        #             variant.product_id = product.id
-        #             variant.option1 = child['options']['Farbe']
-        #             variant.option2 = child['options']['Größe']
-        #             variant.barcode = child['ean']
-        #             variant.compare_at_price = str(child['strike_price'])
-        #             variant.price = str(child['purchase_price'])
-        #             variant.sku = child['product_number']
-        #             variant.inventory_management = 'shopify'
-        #             product.variants.append(variant)
-        #
-        #         product_result = product.save()
-        #         print(f'{product_result=}')
-        #         if not product_result:
-        #             return
-        #         images_map = {
-        #             child['options']['Farbe']: {
-        #                 'url': child['image_urls'][0],
-        #                 'variant_ids': []
-        #             }
-        #             for child in container['children']
-        #         }
-        #
-        #         for variant in product.variants:
-        #             images_map[variant.option1]['variant_ids'].append(variant.id)
-        #
-        #         for color, obj in images_map.items():
-        #             image = shopify.Image()
-        #             image.product_id = product.id
-        #             image.src = obj['url']
-        #             image.variant_ids = obj['variant_ids']
-        #             image_result = image.save()
-        #             print(f'{image_result=}')
-        #
-        #         inventory_ids = [variant.attributes['inventory_item_id'] for variant in product.variants]
-        #         for item_id in inventory_ids:
-        #             inventory_level = shopify.InventoryLevel.find_first(inventory_item_ids=item_id)
-        #             print(f'{inventory_level=}')
-        #             inventory_result = shopify.InventoryLevel.set(
-        #                 inventory_item_id=item_id, location_id=inventory_level.location_id, available=999)
-        #             print(f'{inventory_result=}')
-        #
-        #     for container in list(self.product_data_container.values()):
-        #             try:
-        #                 upload_to_shopify(container)
-        #             except KeyError:
-        #                 print(Exception)
-        #
-        #     # 10.01.2023
-        #     # for container in list(self.product_data_container.values())[:2]:
-        #     #     product = {
-        #     #         'input': {
-        #     #             'title': container['product_name'],
-        #     #             'productType': 'test',
-        #     #             'vendor': 'manufacturer_name',
-        #     #         }
-        #     #     }
-        #     #     with open('test.jsonl', 'a') as j:
-        #     #         j.write(json.dumps(product, indent=4) + '\n')
-        #     #
-        #     #     result = json.loads(shopify.GraphQL().execute('''
-        #     #         mutation {
-        #     #           stagedUploadsCreate(input:{
-        #     #             resource: BULK_MUTATION_VARIABLES,
-        #     #             filename: "bulkproductcreate",
-        #     #             mimeType: "text/jsonl",
-        #     #             httpMethod: POST
-        #     #           }){
-        #     #             userErrors{
-        #     #               field,
-        #     #               message
-        #     #             },
-        #     #             stagedTargets{
-        #     #               url,
-        #     #               resourceUrl,
-        #     #               parameters {
-        #     #                 name,
-        #     #                 value
-        #     #               }
-        #     #             }
-        #     #           }
-        #     #         }'''))
-        #     #     params = result['data']['stagedUploadsCreate']['stagedTargets'][0]['parameters']
-        #     #
-        #     #     files = {
-        #     #         item['name']: (None, item['value'])
-        #     #         for item in result['data']['stagedUploadsCreate']['stagedTargets'][0]['parameters']
-        #     #     }
-        #     #     files['file'] = open('test.jsonl', 'rb')
-        #     #
-        #     #     r = requests.request('POST', 'https://shopify-staged-uploads.storage.googleapis.com/', files=files)
-        #     #     xml = xmltodict.parse(r.content)
-        #     #     upload_path = '/'.join(xml['PostResponse']['Location'].split('/')[4:])
-        #     #     result = json.loads(shopify.GraphQL().execute(f'''
-        #     #         mutation {{
-        #     #           bulkOperationRunMutation(
-        #     #             mutation: "mutation call($input: ProductInput!) {{ productCreate(input: $input) {{ product {{id title variants(first: 10) {{edges {{node {{id title inventoryQuantity }}}}}}}} userErrors {{ message field }} }} }}",
-        #     #             stagedUploadPath: "{upload_path}") {{
-        #     #             bulkOperation {{
-        #     #               id
-        #     #               url
-        #     #               status
-        #     #             }}
-        #     #             userErrors {{
-        #     #               message
-        #     #               field
-        #     #             }}
-        #     #           }}
-        #     #         }}
-        #     #         '''))
-        #     #
-        #     #     # with ThreadPoolExecutor(max_workers=5) as executor:
-        #     #     #
-        #     #     #     uploads = [executor.submit(upload_to_shopify, container) for container in self.product_data_container]
-        #     #     #     [progress.update(progress_task, advance=1) for _ in futures.as_completed(uploads)]
+        for task in asyncio.as_completed(tasks):
+            response, image = await task
+            if response.status_code not in [200, 204]:
+                message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {image.url} | FILENAME: {image.filename}'
+                print(response.status_code, response.json())
+                error_message = response.json()['errors'][0]['code']
+                print(error_message)
 
-    def upload_manufacturer_images(self):
-        query = f"""
-        CREATE TABLE IF NOT EXISTS `{self._conf.target}_uploaded_manufacturer_images`
-        (url UNIQUE, manufacturer_name)
-        """
-        self.cur.execute(query)
-        self.con.commit()
-        uploaded_count = len(self.cur.execute((f"""
-        SELECT * FROM `{self._conf.target}_uploaded_manufacturer_images`
-        """)).fetchall())
-
-        image_data = self.cur.execute(
-            f"""
-            SELECT DISTINCT manufacturer_image_url u, manufacturer_name f FROM {self._conf.parser_name}_products
-            WHERE u != '""'
-            AND url IN (SELECT url FROM '{self._conf.target}_uploaded_products')
-            AND u NOT IN (SELECT url FROM `{self._conf.target}_uploaded_manufacturer_images`)
-            """).fetchall()
-        image_data = [tuple(json.loads(col) for col in row) for row in image_data]
-
-        to_upload_count = len(image_data)
-        self.signals.upload_progress_reset.emit()
-        self.signals.product_uploader_format.emit('UPLOADING MANUFACTURER IMAGES (%v / %m)')
-        self.signals.product_upl_list.emit(to_upload_count + uploaded_count)
-        self.signals.existing_products2.emit(uploaded_count)
-
-        if not self.DEBUG:
-
-            with ThreadPoolExecutor(max_workers=12) as executor:
-                jobs = {
-                    executor.submit(self.target_shop_instance.upload_media, url, filename, file_bytes=True): (url, filename)
-                    # executor.submit(self.target_shop_instance.upload_media, url, filename): (url, filename)
-                    for url, filename in image_data
-                }
-                for future in futures.as_completed(jobs):
-                    response = future.result()
-                    print(response)
-                    query = f"""
-                    INSERT OR REPLACE INTO `{self._conf.target}_uploaded_manufacturer_images` 
-                    VALUES(?,?)
-                    """
-                    self.cur.execute(query, self.__jsonify_for_db__(jobs[future]))
-                    self.signals.product_upl_progress.emit()
-                    self.con.commit()
-
-        else:
-            for url, filename in image_data:
-                # resp = self.target_shop_instance.upload_media(url, filename, file_bytes=True)
-                resp = self.target_shop_instance.upload_media(url, filename)
-                print(url, filename)
-
-    def upload_product_images(self):
-        self.cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS `{self._conf.target}_uploaded_product_images`
-        (url UNIQUE, filename)
-        """)
-        self.con.commit()
-        uploaded_count = len(self.cur.execute((f"""
-        SELECT * FROM `{self._conf.target}_uploaded_product_images`
-        """)).fetchall())
-
-        uploaded_products = self.cur.execute(f"""
-        SELECT REPLACE(url, '"', '') FROM '{self._conf.target}_uploaded_products'
-        """).fetchall()
-
-        image_data = self.cur.execute(
-            f"""
-            SELECT url u, filename f FROM {self._conf.parser_name}_product_images 
-            WHERE u != '""'
-            AND product IN (SELECT REPLACE(url, '"', '') FROM '{self._conf.target}_uploaded_products')
-            AND u NOT IN (SELECT url FROM `{self._conf.target}_uploaded_product_images`)            
-            """).fetchall()
-
-        to_upload_count = len(image_data)
-
-        self.signals.upload_progress_reset.emit()
-        self.signals.product_uploader_format.emit('UPLOADING PRODUCT IMAGES (%v / %m)')
-        self.signals.product_upl_list.emit(to_upload_count + uploaded_count)
-        self.signals.existing_products2.emit(uploaded_count)
-
-        # if image_data:
-        #     existing_images = self.target_shop_instance.get_all_media_with_file()
-        #     existing_image_ids = [item['id'] for item in existing_images]
-        #     records = []
-        #     for image in image_data.copy():
-        #         url, fname = image
-        #         uuid = md5(url.encode()).hexdigest()
-        #         if uuid in existing_image_ids:
-        #             image_data.remove(image)
-        #             records.append(image)
-        #             message = f'✔ MEDIA UPLOADED ✔ (URL: {url} | FILENAME: {fname})'
-        #             self.signals.to_output.emit(f'<span style="color:{Colors.success}">{message}</span>')
-        #             self.signals.product_upl_progress.emit()
-        #
-        #     print('inserting existing media to database')
-        #
-        #     self.cur.executemany(f"""
-        #     INSERT OR REPLACE INTO `{self._conf.target}_uploaded_product_images` VALUES(?,?)
-        #     """, records)
-        #     self.con.commit()
-        #
-        #     print('inserting existing media to database done...')
-
-        if not self.DEBUG:
-
-            with ThreadPoolExecutor(max_workers=12) as executor:
-                jobs = {
-                    executor.submit(self.target_shop_instance.upload_media, url, re.sub('\W', '-', filename)): (url, filename)
-                    # executor.submit(self.target_shop_instance.upload_media, url, re.sub('\W', '-', filename), file_bytes=True): (url, filename)
-                    for url, filename in image_data
-                }
-                for future in futures.as_completed(jobs):
-                    # print('processing...')
-                    self.signals.product_upl_progress.emit()
-                    response = future.result()
-                    u, f = jobs[future]
-                    if response.status_code not in [200, 204]:
-                        message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {u} | FILENAME: {f}'
-                        # print(response.text)
-                        print(response.status_code, response.json())
-                        error_message = response.json()['errors'][0]['code']
+                match error_message:
+                    case ('CONTENT__MEDIA_NOT_FOUND' | 
+                          'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 
+                          'CONTENT__MEDIA_ILLEGAL_FILE_NAME'):
+                        await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+                        
+                    case _:
+                        print('SOMETHING ELSE HAPPENED, WTF?')
                         print(error_message)
+                        continue
+        
+            await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+            message = f'✔ MEDIA UPLOADED ✔ (URL: {image.url} | FILENAME: {image.filename})'
+            # print(message)
+          
+    async def upload_product_images(self):
+        
+        child_products = set([
+            child 
+            for product in self.products_from_db 
+            async for child in product.children.all()
+        ])
 
-                        match error_message:
-                            case 'CONTENT__MEDIA_NOT_FOUND' | 'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 'CONTENT__MEDIA_ILLEGAL_FILE_NAME':
-                                self.cur.execute(f"""
-                                    INSERT OR REPLACE INTO `{self._conf.target}_uploaded_product_images` VALUES(?,?)
-                                    """, (u, f))
-                                self.con.commit()
+        all_products = self.products_from_db.union(child_products)
+        
+        product_images_from_db = set([
+            image
+            for product in all_products
+            async for image in product.images.filter(image_type='product_image')
+        ])
+                
+        uploaded_product_images = set([image async for image in self.target_shop.uploaded_images.filter(image_type='product_image')])
+        product_images_to_upload = product_images_from_db - uploaded_product_images
+        total_count = len(product_images_from_db)
+        uploaded_count = len(uploaded_product_images)
+        
+        print(f'{uploaded_count}/{total_count} Uploading product images...')
+        
+        # if self.DEBUG:
+        # if False:
+        #     print('DEBUGGING PRODUCT IMAGE UPLOADS')
+        #     for image in product_images_to_upload:
+        #         response = await self.target_shop_instance.upload_media(image.url, image.filename)
+        #         if response.status_code not in [200, 204]:
+        #             message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {image.url} | FILENAME: {image.filename}'
+        #             print(response.status_code, response.json())
+        #             error_message = response.json()['errors'][0]['code']
+        #             print(error_message)
 
-                            case _:
-                                print('SOMETHING ELSE HAPPENED, WTF?')
-                                print(error_message)
+        #             match error_message:
+        #                 case 'CONTENT__MEDIA_NOT_FOUND' | 'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 'CONTENT__MEDIA_ILLEGAL_FILE_NAME':
+        #                     image: Image = image
+        #                     await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+                            
+        #                 case _:
+        #                     print('SOMETHING ELSE HAPPENED, WTF?')
+        #                     print(error_message)
+        #                     continue
+                        
+        #         await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+        #         message = f'✔ MEDIA UPLOADED ✔ (URL: {image.url} | FILENAME: {image.filename})'
+        #         print(message)
+                
+        #     return
 
-                    else:
-                        self.cur.execute(f"""
-                        INSERT OR REPLACE INTO `{self._conf.target}_uploaded_product_images` VALUES(?,?)
-                        """, (u, f))
-                        self.con.commit()
-                        message = f'✔ MEDIA UPLOADED ✔ (URL: {u} | FILENAME: {f})'
-                        # print(message)
+        tasks = [
+            asyncio.create_task(self.target_shop_instance.upload_media(image.url, image.filename, media=image))
+            for image in product_images_to_upload
+        ]
 
-        else:
-            message = f'!!! DEBUG MODE !!! (Product image_urls will be uploaded one by one)'
-            # self.signals.to_output.emit(f'<span style="color:{Colors.info}">{message}</span>')
-            for url, filename in image_data:
-                u, f = url, filename
-                response = self.target_shop_instance.upload_media(url, filename, file_bytes=True)
-                # response = self.target_shop_instance.upload_media(url, filename)
-                if response.status_code not in [200, 204]:
-                    message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {u} | FILENAME: {f}'
-                    # print(response.text)
-                    print(response.status_code, response.json())
-                    error_message = response.json()['errors'][0]['code']
-                    print(error_message)
+        for task in asyncio.as_completed(tasks):
+            response, image = await task
 
-                    match error_message:
-                        case 'CONTENT__MEDIA_NOT_FOUND' | 'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 'CONTENT__MEDIA_ILLEGAL_FILE_NAME':
-                            self.cur.execute(f"""
-                                INSERT OR REPLACE INTO `{self._conf.target}_uploaded_product_images` VALUES(?,?)
-                                """, (u, f))
-                            self.con.commit()
+            if response.status_code not in [200, 204]:
+                message = f'✖ MEDIA UPLOAD ERROR ✖ URL: {image.url} | FILENAME: {image.filename}'
+                logging.info(response.status_code, response.json())
+                error_message = response.json()['errors'][0]['code']
+                logging.info(error_message)
 
-                        case _:
-                            print('SOMETHING ELSE HAPPENED, WTF?')
-                # assert response.status_code == 204
-                else:
-                    self.cur.execute(f"""
-                    INSERT OR REPLACE INTO `{self._conf.target}_uploaded_product_images` VALUES(?,?)
-                    """, (u, f))
-                    self.con.commit()
-                    message = f'✔ MEDIA UPLOADED ✔ (URL: {u} | FILENAME: {f})'
-                    print(message)
-                self.signals.product_upl_progress.emit()
+                match error_message:
+                    case ('CONTENT__MEDIA_NOT_FOUND' | 
+                          'CONTENT__MEDIA_DUPLICATED_FILE_NAME' | 
+                          'CONTENT__MEDIA_ILLEGAL_FILE_NAME'):
+                        image: Image = image
+                        await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+                        
+                    case _:
+                        logging.info('SOMETHING ELSE HAPPENED, WTF?')
+                        logging.info(error_message)
+                        continue
+        
+            await image.uploaded_to_shops.aadd(self.target_shop_instance.target)
+            message = f'✔ MEDIA UPLOADED ✔ (URL: {image.url} | FILENAME: {image.filename})'
 
     def upload_energy_media(self):
         self.cur.execute(f"""
@@ -1084,6 +739,8 @@ class Core(ABC):
                 except KeyError as k:
                     print(k)
                     pass
+    
+    ###
 
     async def __grab_category_list__(self, category_url_list):
         
@@ -1103,63 +760,11 @@ class Core(ABC):
         self.fetch_all_main_categories()
         self.__grab_category_list__()
 
-    def grab_old(self):
-        """
-        starts the parsing process depending on config
-        :single product mode
-        :list of products (URLs)
-        :single category mode
-        :list of categories provided through category_input.txt (defeult)
-        :keywords search
-        """
-
-        if self._conf.mode == 'Category list':
-            self.__grab_category_list__()
-
-        elif self._conf.mode == 'Keywords':
-            self.__grab_by_keyword__()
-
-        elif self._conf.mode == 'Product List':
-            self.__grab_product_list__()
-
-        elif self._conf.mode == 'ALL':
-            self.__grab_all__()
-
-        self.download_products()
-
-        if self._conf.download_product_csv:
-            # self.write_to_jtl_csv()
-            # self.write_to_woocommerce_csv()
-            self.write_to_shopify_csv()
-
-        if self._conf.download_product_images:
-            self.download_images()
-
-        if self._conf.upload_to_shop:
-            self.upload_products()
-            if self._conf.upload_product_images:
-                self.upload_manufacturer_images()
-                self.upload_product_images()
-                self.upload_energy_media()
-
-    def dev_grab(self):
-        if self._conf.mode == 'Category list':
-            self.__grab_category_list__()
-
-        elif self._conf.mode == 'Product List':
-            self.__grab_product_list__()
-
-        elif self._conf.mode == 'Keywords':
-            self.__grab_by_keyword__()
-
-        elif self._conf.mode == 'ALL':
-            self.__grab_all__()
-
-        self.download_products()
-        if self._conf.upload_to_shop:
-            self.__get_target_shop_instance__()
-
     async def grab(self):
+        
+        user = await CustomUser.objects.aget(pk=self.settings.user_id)
+        user.grab_lock = True
+        await user.asave()
         print('start grab')
         start_time = time.time()
         if self.settings.parser_mode == Modes.CATEGORY_URLS.name:
@@ -1179,7 +784,25 @@ class Core(ABC):
         
         concurrent_duration = time.time() - start_time
         print(f"grab took: {concurrent_duration:.2f} seconds")
+
+        # user.grab_lock = False
+        # await user.asave()
         
+    async def export(self):
+        await self.__get_target_shop_instance__()
+        
+        self.target_shop = await ShopwareShop.objects.aget(pk=self.settings.target_shop_id)
+        self.product_urls_from_db = self.settings.product_urls.splitlines()
+        self.products_from_db = set([
+            product async for product in 
+            Product.objects
+            .filter(pk__in=self.product_urls_from_db)
+            .select_related('manufacturer_image')
+        ])
+        await self.upload_products_to_shopware()
+        await self.upload_manufacturer_images()
+        await self.upload_product_images()
+    
     def fetch_url_old(
             self,
             url: str,
@@ -1305,7 +928,7 @@ class Core(ABC):
 
                     except (httpx.ConnectTimeout, httpx.ReadTimeout):
                         print('Connection Timeout, async sleeping now')
-                        asyncio.sleep(random.randint(5, 25))
+                        await asyncio.sleep(random.randint(5, 25))
                         print('asyncio slept well')
                         
     @staticmethod

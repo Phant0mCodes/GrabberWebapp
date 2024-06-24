@@ -1,5 +1,5 @@
 {% extends "users/index.html" %}
-{% with a_class='block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white' %}{% endwith %}
+{% with a_class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white" %}{% endwith %}
 {% block content_block %}
     <div class="p-6 px-8">
 
@@ -35,8 +35,11 @@
         </div>
 
         <div id="parser_settings">
-            {% if parser_name %}
+            <div> That is user {{ user.grab_lock }}</div>
+            {% if parser_name and not user.grab_lock %}
                 {% include "users/components/parser_settings.html" %}
+            {% else %}
+                {% include "users/components/grab_status.html" %}
             {% endif %}
         </div>
 </div>
