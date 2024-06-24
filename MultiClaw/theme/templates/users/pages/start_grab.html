@@ -2,7 +2,6 @@
 {% with a_class="block px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-600 dark:hover:text-white" %}{% endwith %}
 {% block content_block %}
     <div class="p-6 px-8">
-
         <button id="parser_dropdown_btn"
                 class="w-52 text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center flex justify-center items-center dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
                 type="button">
@@ -16,14 +15,12 @@
             </svg>
         </button>
         <!-- Dropdown menu -->
-        <div id="parser_dropdown_list" class="hidden w-52 absolute dark:bg-gray-800 border border-gray-700 rounded-xl shadow-l ">
-            <input type="text" id="search" 
-            
-            class="w-52 bg-gray-50 border border-gray-300 text-gray-900 sm:text-sm rounded-t-lg focus:ring-primary-600 
-            focus:border-primary-600 block p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white 
-            dark:focus:ring-blue-500 dark:focus:border-blue-500" 
-
-            placeholder="Search...">
+        <div id="parser_dropdown_list"
+             class="hidden w-52 absolute dark:bg-gray-800 border border-gray-700 rounded-xl shadow-l ">
+            <input type="text"
+                   id="search"
+                   class="w-52 bg-gray-50 border border-gray-300 text-gray-900 sm:text-sm rounded-t-lg focus:ring-primary-600 focus:border-primary-600 block p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+                   placeholder="Search...">
             <ul class="py-2 text-sm text-gray-700 dark:text-gray-200">
                 {% for parser_name in parsers %}
                     <li>
@@ -33,18 +30,16 @@
                 {% endfor %}
             </ul>
         </div>
-
         <div id="parser_settings">
-            <div> That is user {{ user.grab_lock }}</div>
+            <div>That is user {{ user.grab_lock }}</div>
             {% if parser_name and not user.grab_lock %}
                 {% include "users/components/parser_settings.html" %}
             {% else %}
                 {% include "users/components/grab_status.html" %}
             {% endif %}
         </div>
-</div>
-    
-        <script>
+    </div>
+    <script>
         document.getElementById('parser_dropdown_btn').addEventListener('click', function () {
             let dropdown = document.getElementById('parser_dropdown_list');
             dropdown.classList.toggle('hidden');
@@ -74,6 +69,15 @@
                 }
             }
         }
-        </script>
+    </script>
+    <script>
+        // const progressElement = document.getElementById('progress');
+        const socket = new WebSocket('ws://localhost:8000/ws/progress/');
 
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            // progressElement.innerText = data.progress;
+            console.log(data.progress);
+        };
+    </script>
 {% endblock content_block %}

@@ -21,6 +21,7 @@ import yaml
 import asyncio
 import httpx
 import logging
+from channels.layers import get_channel_layer
 from hashlib import md5
 from pathlib import Path
 from abc import abstractmethod, ABC
@@ -50,7 +51,7 @@ from users.models import CustomUser
 from bs4 import BeautifulSoup as Bs
 # from sw6_api.sw6_api import SW6Shop
 from parser.SW6ApiHandler import SW6Shop
-
+from parser.CoreHelpers import ENERGY_ICONS
 from urllib.parse import urlencode
 
 
@@ -68,18 +69,6 @@ discount_factor = (100 - discount) / 100
 images_zip = False
 
 
-ENERGY_ICONS = {
-    'A': 'https://i.imgur.com/w01c9ha.png',
-    'B': 'https://i.imgur.com/dCAhu3Q.png',
-    'C': 'https://i.imgur.com/DNvtddA.png',
-    'D': 'https://i.imgur.com/b8vKRIS.png',
-    'E': 'https://i.imgur.com/WsDzBb7.png',
-    'F': 'https://i.imgur.com/QKFt0V6.png',
-    'G': 'https://i.imgur.com/WwZbMR5.png',
-    'A+': 'https://i.postimg.cc/8CNyVSPw/A.webp',
-    'A++': 'https://i.postimg.cc/PJg4VGRW/A.webp',
-    'A+++': 'https://i.postimg.cc/CMRp2j25/A.webp',
-}
 
 logging.basicConfig(level=logging.ERROR, format='%(message)s')
 
@@ -94,30 +83,6 @@ class Core(ABC):
         self.product_url_list = set()
         self.semaphore = asyncio.Semaphore(12)
         self.data_containers = []
-
-    # @staticmethod
-    # def generate_random_product_number(pre):
-    #     number = random.randint(1000000, 9999999)
-    #     tail = random.randint(10000, 99999)
-    #     return f'{pre}{number}{tail}'
-
-    # @staticmethod
-    # def generate_seo_description(description_html):
-    #     unwrapped = re.sub('Beschreibung\W+', '', Bs(description_html, 'lxml').text)
-    #     unwrapped = re.sub('\n+', ' - ', unwrapped)[:165]
-    #     unwrapped = re.sub('.{3}$', '...', unwrapped)
-    #     return unwrapped
-
-    # @staticmethod
-    # def generate_seo_title(product_name):
-    #     return re.sub(r'[^\w\s]\s*', '', product_name) + ' - kaufen'
-
-    # @staticmethod
-    # def clean_category_url(url):
-    #     if url.endswith('/'):
-    #         url = url[:-1]
-    #     # return url.split('?')[0]
-    #     return url
 
     async def __get_target_shop_instance__(self):
         """
@@ -251,7 +216,17 @@ class Core(ABC):
         channel_layer = get_channel_layer()
 
         await self.save_product_to_db(product, product_images, reviews, child_products)
+        print(f'{self.downloaded_count=}')
+        self.downloaded_count += 1
+        print(f'{self.downloaded_count=}')
         
+        await channel_layer.group_send(
+        'progress_group',
+            {
+                'type': 'send_progress',
+                'progress': f'{self.downloaded_count}/{self.total_count} Downloading products...'
+            }
+        )
         
     @sync_to_async
     def save_product_to_db(self, product, product_images, reviews, child_products):
@@ -277,7 +252,6 @@ class Core(ABC):
                 
                 print(f'PRODUCT {product} COULD NOT BE SAVED')
         
-        
     async def download_products(self, product_url_list):
         
         collected_product_urls = self.product_url_list
@@ -287,12 +261,13 @@ class Core(ABC):
             .filter(pk__in=collected_product_urls)
         ])
 
-        product_urls_to_download = collected_product_urls - product_urls_from_db
+        # product_urls_to_download = collected_product_urls - product_urls_from_db
+        product_urls_to_download = collected_product_urls
 
-        total_count = len(collected_product_urls)
-        downloaded_count = len(product_urls_from_db)
+        self.total_count = len(collected_product_urls)
+        self.downloaded_count = len(product_urls_from_db)
         
-        print(f'{downloaded_count}/{total_count} Downloading products...')
+        print(f'{self.downloaded_count}/{self.total_count} Downloading products...')
 
         fetch_tasks = [
             asyncio.create_task(self.fetch_url(url))
@@ -762,9 +737,9 @@ class Core(ABC):
 
     async def grab(self):
         
-        user = await CustomUser.objects.aget(pk=self.settings.user_id)
-        user.grab_lock = True
-        await user.asave()
+        # user = await CustomUser.objects.aget(pk=self.settings.user_id)
+        # user.grab_lock = True
+        # await user.asave()
         print('start grab')
         start_time = time.time()
         if self.settings.parser_mode == Modes.CATEGORY_URLS.name:
